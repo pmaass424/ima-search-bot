@@ -7,7 +7,18 @@ from ..state import SourceItem, file_digest
 
 
 class LocalFolderConnector:
-    SUPPORTED = {".pdf", ".txt", ".md", ".jpg", ".jpeg", ".png", ".webp"}
+    SUPPORTED = {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    }
     INCOMPLETE_SUFFIXES = {
         ".qkdownloading",
         ".crdownload",

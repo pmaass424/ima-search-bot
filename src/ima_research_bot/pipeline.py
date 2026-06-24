@@ -82,6 +82,14 @@ class ResearchPipeline:
                 logger.info("extracting text from %s", item.title)
                 text = self.extractor.extract(item.path)
                 logger.info("extracted %s chars from %s", len(text), item.title)
+                if not text.strip():
+                    logger.warning("skipping %s because no extractable text was found", item.title)
+                    self.state.set_runtime_value(
+                        "last_error",
+                        f"skipped empty extraction: {item.title[:160]}",
+                    )
+                    self.state.mark_processed(item)
+                    continue
                 logger.info("summarizing %s", item.title)
                 try:
                     summary = self.summarizer.summarize(item.title, text)

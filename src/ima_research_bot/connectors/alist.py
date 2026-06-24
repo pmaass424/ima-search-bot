@@ -26,7 +26,18 @@ class AListConfig:
 
 
 class AListConnector:
-    SUPPORTED = {".pdf", ".txt", ".md", ".jpg", ".jpeg", ".png", ".webp"}
+    SUPPORTED = {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    }
 
     def __init__(
         self,
