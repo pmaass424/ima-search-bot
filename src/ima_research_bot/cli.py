@@ -92,15 +92,20 @@ def main() -> None:
         pipeline.send_manual_digest()
         return
 
+    collector_enabled = os.getenv("COLLECTOR_ENABLED", "1") != "0"
+    if not collector_enabled:
+        logging.warning("collector disabled by COLLECTOR_ENABLED=0; Telegram chat commands remain available")
+
     scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(
-        locked_run_once,
-        "interval",
-        minutes=settings.poll_interval_minutes,
-        next_run_time=None,
-        max_instances=1,
-        coalesce=True,
-    )
+    if collector_enabled:
+        scheduler.add_job(
+            locked_run_once,
+            "interval",
+            minutes=settings.poll_interval_minutes,
+            next_run_time=None,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     logging.info("scheduler started; interval=%s minutes", settings.poll_interval_minutes)
     if os.getenv("TELEGRAM_COMMANDS_ENABLED", "1") != "0":
@@ -115,7 +120,8 @@ def main() -> None:
             daemon=True,
         ).start()
         logging.info("telegram command loop started")
-    locked_run_once()
+    if collector_enabled:
+        locked_run_once()
     try:
         while True:
             time.sleep(60)
@@ -193,6 +199,9 @@ def _handle_telegram_command(
         pipeline.telegram.send_text("\n".join(detail))
         return
     if command in {"/run", "run", "/now", "now"}:
+        if os.getenv("COLLECTOR_ENABLED", "1") == "0":
+            pipeline.telegram.send_text("Coleta IMA esta pausada por COLLECTOR_ENABLED=0. O chat continua online.")
+            return
         if not pipeline_lock.acquire(blocking=False):
             pipeline.telegram.send_text("Ja tem um ciclo rodando. Vou ignorar /run para nao sobrepor.")
             return
