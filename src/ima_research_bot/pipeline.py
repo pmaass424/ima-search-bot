@@ -64,16 +64,18 @@ class ResearchPipeline:
         self.state.set_runtime_value("last_candidate_count", str(len(items)))
 
         processed = 0
+        attempted = 0
         batch_summaries: list[Summary] = []
         batch_items: list[SourceItem] = []
         for item in items:
             if self.state.is_processed(item):
                 self._cleanup_source_item(item)
                 continue
-            if self.settings.process_limit_per_run > 0 and processed >= self.settings.process_limit_per_run:
+            if self.settings.process_limit_per_run > 0 and attempted >= self.settings.process_limit_per_run:
                 logger.info("process limit reached; remaining new items will be handled in later cycles")
                 self._cleanup_source_item(item)
                 continue
+            attempted += 1
             logger.info("processing %s", item.title)
             self.state.set_runtime_value("current_status", f"processing: {item.title[:160]}")
             try:
@@ -91,8 +93,7 @@ class ResearchPipeline:
                 message = f"[Research] {summary.title}\n\n{source_note}\n\n{summary.text}"
 
                 if self.settings.send_text_updates:
-                    self.telegram.send_text(message)
-                    self.wecom.send_text(message)
+                    self._send_text_update(message)
 
                 audio_path = None
                 if not self.settings.digest_mode:
@@ -103,13 +104,21 @@ class ResearchPipeline:
                         logger.warning("%s", exc)
                         self._notify_budget_stop(str(exc))
                 if audio_path:
-                        self.telegram.send_audio(audio_path, caption=_audio_caption(summary.title, [item]))
+                    self._send_audio_update(audio_path, caption=_audio_caption(summary.title, [item]))
 
                 self.state.record_summary(item, summary.text)
                 self.state.mark_processed(item)
                 batch_summaries.append(summary)
                 batch_items.append(item)
                 processed += 1
+            except DailyBudgetExceeded:
+                raise
+            except Exception as exc:
+                logger.exception("failed to process %s; continuing with next item", item.title)
+                self.state.set_runtime_value(
+                    "last_error",
+                    f"failed to process {item.title[:120]}: {type(exc).__name__}: {exc}",
+                )
             finally:
                 self._cleanup_source_item(item)
 
@@ -117,7 +126,14 @@ class ResearchPipeline:
         self.state.set_runtime_value("last_processed_count", str(processed))
         self.state.set_runtime_value("current_status", "idle")
         if self.settings.batch_insights_enabled and batch_summaries:
-            self._send_batch_insights(batch_summaries, batch_items)
+            try:
+                self._send_batch_insights(batch_summaries, batch_items)
+            except Exception as exc:
+                logger.exception("batch insight failed after processing items")
+                self.state.set_runtime_value(
+                    "last_error",
+                    f"batch insight failed: {type(exc).__name__}: {exc}",
+                )
 
     def _send_batch_insights(self, batch_summaries: list[Summary], batch_items: list[SourceItem]) -> None:
         context_scan_limit = int(
@@ -156,8 +172,7 @@ class ResearchPipeline:
         message = f"[{title}]\n\n{source_note}\n\n{insight}"
         self._store_last_digest(message)
         if self.settings.send_text_updates:
-            self.telegram.send_text(message)
-            self.wecom.send_text(message)
+            self._send_text_update(message)
         spoken_text = _prepend_spoken_source_note(insight, batch_items)
         try:
             audio_path = self.tts.synthesize(spoken_text, audio_name)
@@ -166,8 +181,9 @@ class ResearchPipeline:
             self._notify_budget_stop(str(exc))
             audio_path = None
         if audio_path:
-            self._store_last_audio(audio_path)
-            self.telegram.send_audio(audio_path, caption=_audio_caption(title, batch_items))
+            caption = _audio_caption(title, batch_items)
+            self._store_last_audio(audio_path, caption)
+            self._send_audio_update(audio_path, caption=caption)
 
     def send_manual_digest(self) -> bool:
         context_scan_limit = int(
@@ -208,8 +224,7 @@ class ResearchPipeline:
         message = f"[{title}]\n\n{insight}"
         self._store_last_digest(message)
         if self.settings.send_text_updates:
-            self.telegram.send_text(message)
-            self.wecom.send_text(message)
+            self._send_text_update(message)
 
         spoken_text = "Manual radar from recent research memory. Now the summary.\n\n" + insight
         try:
@@ -219,28 +234,31 @@ class ResearchPipeline:
             self._notify_budget_stop(str(exc))
             audio_path = None
         if audio_path:
-            self._store_last_audio(audio_path)
-            self.telegram.send_audio(audio_path, caption=title)
+            self._store_last_audio(audio_path, title)
+            self._send_audio_update(audio_path, caption=title)
         return True
 
     def resend_last_text(self) -> bool:
         text = self.state.runtime_value("last_digest_text")
         if not text:
-            self.telegram.send_text("Ainda nao tem digest salvo para reenviar.")
+            self._send_text_update("Ainda nao tem digest salvo para reenviar.")
             return False
-        self.telegram.send_text(text)
+        self._send_text_update(text)
         return True
 
     def resend_last_audio(self) -> bool:
         raw_path = self.state.runtime_value("last_audio_path")
         if not raw_path:
-            self.telegram.send_text("Ainda nao tem audio salvo para reenviar.")
+            self._send_text_update("Ainda nao tem audio salvo para reenviar.")
             return False
         path = os.path.abspath(raw_path)
         if not os.path.exists(path):
-            self.telegram.send_text("O ultimo audio salvo nao existe mais no disco.")
+            self._send_text_update("O ultimo audio salvo nao existe mais no disco.")
             return False
-        self.telegram.send_audio(Path(path), caption=self.state.runtime_value("last_audio_caption") or "Research digest")
+        self._send_audio_update(
+            Path(path),
+            caption=self.state.runtime_value("last_audio_caption") or "Research digest",
+        )
         return True
 
     def budget_status_text(self) -> str:
@@ -264,16 +282,35 @@ class ResearchPipeline:
             "The bot will keep running and will try again on the next cycle/day.\n\n"
             f"{detail}"
         )
-        self.telegram.send_text(message)
-        self.wecom.send_text(message)
+        self._send_text_update(message)
 
     def _store_last_digest(self, text: str) -> None:
         self.state.set_runtime_value("last_digest_text", text)
 
-    def _store_last_audio(self, path: Path) -> None:
-        caption = "Research digest"
+    def _store_last_audio(self, path: Path, caption: str) -> None:
         self.state.set_runtime_value("last_audio_path", str(path))
         self.state.set_runtime_value("last_audio_caption", caption)
+
+    def _send_text_update(self, message: str) -> None:
+        for name, notifier in (("telegram", self.telegram), ("wecom", self.wecom)):
+            try:
+                notifier.send_text(message)
+            except Exception as exc:
+                logger.warning("%s text notification failed: %s", name, exc)
+                self.state.set_runtime_value(
+                    "last_notification_error",
+                    f"{name} text: {type(exc).__name__}: {exc}",
+                )
+
+    def _send_audio_update(self, path: Path, caption: str) -> None:
+        try:
+            self.telegram.send_audio(path, caption=caption)
+        except Exception as exc:
+            logger.warning("telegram audio notification failed: %s", exc)
+            self.state.set_runtime_value(
+                "last_notification_error",
+                f"telegram audio: {type(exc).__name__}: {exc}",
+            )
 
     def _cleanup_source_item(self, item: SourceItem) -> None:
         if item.source_id.startswith(("ima:", "alist:")):

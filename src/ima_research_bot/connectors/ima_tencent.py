@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -58,7 +59,7 @@ class ImaTencentConnector:
         if not self.enabled:
             raise RuntimeError("IMA credentials are not configured")
         url = f"{self.config.base_url.rstrip('/')}/{path.lstrip('/')}"
-        response = requests.post(url, headers=self._headers(), json=body, timeout=60)
+        response = _request_with_retry("post", url, headers=self._headers(), json=body, timeout=60)
         response.raise_for_status()
         payload = response.json()
         if payload.get("code") not in (0, None):
@@ -350,7 +351,7 @@ class ImaKnowledgeConnector:
         if not url:
             return None
         headers = url_info.get("headers") or {}
-        response = requests.get(url, headers=headers, timeout=180)
+        response = _request_with_retry("get", url, headers=headers, timeout=180)
         response.raise_for_status()
 
         ext = _extension_for(title, response.headers.get("Content-Type", ""), media_type)
@@ -427,3 +428,20 @@ def _extension_for(title: str, content_type: str, media_type: int) -> str:
         9: ".jpg",
         13: ".txt",
     }.get(media_type, ".bin")
+
+
+def _request_with_retry(method: str, url: str, attempts: int = 3, **kwargs) -> requests.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.request(method, url, **kwargs)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                return response
+            last_exc = requests.HTTPError(f"transient HTTP {response.status_code}", response=response)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(2 ** (attempt - 1))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("request retry exhausted without response")

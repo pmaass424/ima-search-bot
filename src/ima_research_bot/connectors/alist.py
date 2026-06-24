@@ -2,6 +2,7 @@ import os
 import logging
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -128,7 +129,8 @@ class AListConnector:
 
     def _login(self) -> str:
         url = f"{self.config.base_url.rstrip('/')}/api/auth/login"
-        response = requests.post(
+        response = _request_with_retry(
+            "post",
             url,
             json={"username": self.config.username, "password": self.config.password},
             timeout=30,
@@ -142,7 +144,13 @@ class AListConnector:
 
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.config.base_url.rstrip('/')}/{path.lstrip('/')}"
-        response = requests.post(url, headers=self._headers(), json=body, timeout=60)
+        response = _request_with_retry(
+            "post",
+            url,
+            headers=self._headers(),
+            json=body,
+            timeout=60,
+        )
         response.raise_for_status()
         payload = response.json()
         if payload.get("code") not in (200, 0):
@@ -207,7 +215,7 @@ class AListConnector:
         fd, raw_path = tempfile.mkstemp(prefix="alist_", suffix=suffix)
         os.close(fd)
         path = Path(raw_path)
-        response = requests.get(url, headers=self._headers(), timeout=180)
+        response = _request_with_retry("get", url, headers=self._headers(), timeout=180)
         response.raise_for_status()
         path.write_bytes(response.content)
         return SourceItem(
@@ -335,3 +343,20 @@ def _first_subdir(row: dict[str, Any], root_path: str) -> str:
     else:
         rel = path.lstrip("/")
     return rel.split("/", 1)[0] or "."
+
+
+def _request_with_retry(method: str, url: str, attempts: int = 3, **kwargs) -> requests.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.request(method, url, **kwargs)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                return response
+            last_exc = requests.HTTPError(f"transient HTTP {response.status_code}", response=response)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(2 ** (attempt - 1))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("request retry exhausted without response")
