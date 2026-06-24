@@ -1,0 +1,11 @@
+[Unit]
+Description=Run IMA Research Radar on a schedule
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+TimeZone=Asia/Shanghai
+Persistent=true
+Unit=ima-research-radar.service
+
+[Install]
+WantedBy=timers.target

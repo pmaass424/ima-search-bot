@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ima-research-bot"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+  "apscheduler==3.10.4",
+  "openai>=1.93.0",
+  "pillow>=10.4.0",
+  "pypdf>=4.3.1",
+  "python-dotenv>=1.0.1",
+  "requests>=2.32.3",
+  "pytesseract>=0.3.13",
+]
+
+[project.scripts]
+ima-research-bot = "ima_research_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
