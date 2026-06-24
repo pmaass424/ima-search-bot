@@ -282,6 +282,14 @@ class ResearchPipeline:
             f"Restante estimado: ${remaining:.4f}"
         )
 
+    def answer_chat_question(self, question: str) -> str:
+        question = question.strip()
+        if not question:
+            return "Manda uma pergunta depois de /ask."
+        stored = self.state.recent_summaries(self.settings.recent_memory_limit)
+        context = [Summary(title=item.title, text=item.summary) for item in stored]
+        return self.summarizer.answer_question(question, context)
+
     def _notify_budget_stop(self, detail: str) -> None:
         message = (
             "[OpenAI budget]\n\n"

@@ -104,6 +104,11 @@ def main() -> None:
     scheduler.start()
     logging.info("scheduler started; interval=%s minutes", settings.poll_interval_minutes)
     if os.getenv("TELEGRAM_COMMANDS_ENABLED", "1") != "0":
+        try:
+            pipeline.telegram.delete_webhook()
+            logging.info("telegram webhook cleared for polling command loop")
+        except Exception as exc:
+            logging.warning("failed to clear telegram webhook before polling: %s", exc)
         threading.Thread(
             target=_telegram_command_loop,
             args=(pipeline, pipeline_lock, runtime),
@@ -125,19 +130,26 @@ def _telegram_command_loop(
 ) -> None:
     offset = 0
     allowed_chat_id = str(pipeline.settings.telegram_chat_id)
+    if not pipeline.telegram.enabled:
+        logging.warning("telegram command loop disabled because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
+        return
     while True:
         try:
             updates = pipeline.telegram.get_updates(offset=offset, timeout=30)
+            if updates:
+                logging.info("telegram command loop received %s update(s)", len(updates))
             for update in updates:
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
                 message = update.get("message") or update.get("edited_message") or {}
                 chat = message.get("chat") or {}
                 chat_id = str(chat.get("id") or "")
                 if allowed_chat_id and chat_id != allowed_chat_id:
+                    logging.warning("ignoring telegram command from chat_id=%s; allowed_chat_id=%s", chat_id, allowed_chat_id)
                     continue
                 text = str(message.get("text") or "").strip().lower()
                 if not text:
                     continue
+                logging.info("handling telegram command %s from chat_id=%s", text.split()[0], chat_id)
                 _handle_telegram_command(text, pipeline, pipeline_lock, runtime)
         except Exception as exc:
             runtime.last_error = f"{type(exc).__name__}: {exc}"
@@ -152,6 +164,15 @@ def _handle_telegram_command(
     runtime: RuntimeState,
 ) -> None:
     command = text.split()[0].split("@", 1)[0]
+    if command in {"/start", "start", "/help", "help"}:
+        pipeline.telegram.send_text(
+            "Bot online. Comandos: /ask, /status, /run, /radar, /text, /audio, /budget."
+        )
+        return
+    if command in {"/ask", "ask", "/chat", "chat"}:
+        question = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+        _answer_telegram_question(question, pipeline, runtime)
+        return
     if command in {"/status", "status"}:
         state = "rodando" if runtime.running else "ocioso"
         persisted_status = pipeline.state.runtime_value("current_status") or state
@@ -213,9 +234,27 @@ def _handle_telegram_command(
     if command in {"/budget", "budget"}:
         pipeline.telegram.send_text(pipeline.budget_status_text())
         return
+    if not command.startswith("/"):
+        _answer_telegram_question(text, pipeline, runtime)
+        return
     pipeline.telegram.send_text(
-        "Comando recebido. Use /run, /radar, /text, /audio, /budget ou /status."
+        "Comando recebido. Use /ask, /run, /radar, /text, /audio, /budget ou /status."
     )
+
+
+def _answer_telegram_question(
+    question: str,
+    pipeline: ResearchPipeline,
+    runtime: RuntimeState,
+) -> None:
+    try:
+        pipeline.telegram.send_text("Pensando com a memoria recente...")
+        answer = pipeline.answer_chat_question(question)
+        pipeline.telegram.send_text(answer or "Nao consegui montar uma resposta agora.")
+    except Exception as exc:
+        runtime.last_error = f"{type(exc).__name__}: {exc}"
+        pipeline.telegram.send_text(f"Chat falhou: {runtime.last_error[:500]}")
+        raise
 
 
 def _run_manual_digest(

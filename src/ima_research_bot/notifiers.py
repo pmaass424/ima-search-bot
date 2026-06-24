@@ -56,6 +56,18 @@ class TelegramNotifier:
             return []
         return list(data.get("result") or [])
 
+    def delete_webhook(self) -> None:
+        if not self.enabled:
+            return
+        url = f"https://api.telegram.org/bot{self.token}/deleteWebhook"
+        response = _request_with_retry(
+            "post",
+            url,
+            json={"drop_pending_updates": False},
+            timeout=30,
+        )
+        response.raise_for_status()
+
 
 class WeComNotifier:
     def __init__(self, webhook_url: str) -> None:

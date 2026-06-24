@@ -164,6 +164,43 @@ RECENT MEMORY:
         self._record_usage(response, "hourly_digest")
         return response.output_text.strip()
 
+    def answer_question(self, question: str, recent_context: list[Summary]) -> str:
+        context_block = "\n\n".join(
+            f"### {item.title}\n{item.text}" for item in recent_context
+        )
+
+        if not self.client:
+            titles = "\n".join(f"- {item.title}" for item in recent_context[:10])
+            return (
+                "OpenAI nao esta configurado nesse bot, entao nao consigo responder como chat agora.\n\n"
+                f"Memoria recente disponivel:\n{titles}"
+            )
+
+        prompt = f"""
+You are the Telegram chat brain for an institutional research bot.
+Answer the user's question in {self.language}.
+Use RECENT RESEARCH MEMORY when it is relevant, and say clearly when the memory does not contain enough evidence.
+Do not invent numbers, events, tickers, recommendations, or facts that are not in the memory or the user's question.
+Keep the answer practical, direct, and concise.
+
+USER QUESTION:
+{question}
+
+RECENT RESEARCH MEMORY:
+{context_block[: self.max_input_chars]}
+"""
+        if self.budget:
+            self.budget.ensure_available(
+                self.budget.estimate_text(len(prompt), output_tokens=1000),
+                "telegram chat answer",
+            )
+        response = self.client.responses.create(
+            model=self.model,
+            input=prompt,
+        )
+        self._record_usage(response, "telegram_chat")
+        return response.output_text.strip()
+
     def _record_usage(self, response, category: str) -> None:
         if not self.budget:
             return
