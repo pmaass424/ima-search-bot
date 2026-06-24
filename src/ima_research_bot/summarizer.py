@@ -201,6 +201,41 @@ RECENT RESEARCH MEMORY:
         self._record_usage(response, "telegram_chat")
         return response.output_text.strip()
 
+    def answer_question_from_documents(self, question: str, documents: list[Summary]) -> str:
+        docs_block = "\n\n".join(
+            f"### {item.title}\n{item.text}" for item in documents
+        )
+        if not documents:
+            return "Nao encontrei documentos relevantes para essa pergunta."
+        if not self.client:
+            titles = "\n".join(f"- {item.title}" for item in documents)
+            return f"OpenAI nao esta configurado. Documentos IMA encontrados:\n{titles}"
+
+        prompt = f"""
+You are a GPT research assistant with live IMA document access.
+Answer the user in the same language as the question unless the user asks otherwise.
+Use ONLY the IMA documents below and the user's question. Do not invent facts.
+Start with a short answer. Then list the documents used.
+If the documents are insufficient, say exactly what is missing.
+
+USER QUESTION:
+{question}
+
+IMA DOCUMENTS:
+{docs_block[: self.max_input_chars]}
+"""
+        if self.budget:
+            self.budget.ensure_available(
+                self.budget.estimate_text(len(prompt), output_tokens=1400),
+                "live IMA chat answer",
+            )
+        response = self.client.responses.create(
+            model=self.model,
+            input=prompt,
+        )
+        self._record_usage(response, "live_ima_chat")
+        return response.output_text.strip()
+
     def _record_usage(self, response, category: str) -> None:
         if not self.budget:
             return

@@ -134,7 +134,11 @@ def _telegram_command_loop(
     pipeline_lock: threading.Lock,
     runtime: RuntimeState,
 ) -> None:
-    offset = 0
+    raw_offset = pipeline.state.runtime_value("telegram_update_offset") or "0"
+    try:
+        offset = int(raw_offset)
+    except ValueError:
+        offset = 0
     allowed_chat_id = str(pipeline.settings.telegram_chat_id)
     if not pipeline.telegram.enabled:
         logging.warning("telegram command loop disabled because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
@@ -146,6 +150,7 @@ def _telegram_command_loop(
                 logging.info("telegram command loop received %s update(s)", len(updates))
             for update in updates:
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
+                pipeline.state.set_runtime_value("telegram_update_offset", str(offset))
                 message = update.get("message") or update.get("edited_message") or {}
                 chat = message.get("chat") or {}
                 chat_id = str(chat.get("id") or "")
@@ -257,7 +262,7 @@ def _answer_telegram_question(
     runtime: RuntimeState,
 ) -> None:
     try:
-        pipeline.telegram.send_text("Pensando com a memoria recente...")
+        pipeline.telegram.send_text("Buscando no IMA e pensando...")
         answer = pipeline.answer_chat_question(question)
         pipeline.telegram.send_text(answer or "Nao consegui montar uma resposta agora.")
     except Exception as exc:

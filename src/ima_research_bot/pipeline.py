@@ -286,9 +286,92 @@ class ResearchPipeline:
         question = question.strip()
         if not question:
             return "Manda uma pergunta depois de /ask."
+        inventory = self._answer_inventory_question(question)
+        if inventory:
+            return inventory
+        live_answer = self._answer_live_ima_question(question)
+        if live_answer:
+            return live_answer
         stored = self.state.recent_summaries(self.settings.recent_memory_limit)
         context = [Summary(title=item.title, text=item.summary) for item in stored]
         return self.summarizer.answer_question(question, context)
+
+    def _answer_live_ima_question(self, question: str) -> str:
+        if os.getenv("IMA_CHAT_ENABLED", "1") == "0":
+            return ""
+        if not hasattr(self.connector, "search_items"):
+            return ""
+        try:
+            items = self.connector.search_items(
+                query=question,
+                max_results=int(os.getenv("IMA_CHAT_SEARCH_LIMIT", "6")),
+                max_downloads=int(os.getenv("IMA_CHAT_DOWNLOAD_LIMIT", "2")),
+            )
+        except ImaApiError as exc:
+            if exc.is_quota_error:
+                return (
+                    "IMA ao vivo esta sem quota agora: "
+                    f"{exc.message}. "
+                    "Eu consigo responder pela memoria local, mas nao consigo abrir novos docs IMA ate resetar a quota."
+                )
+            raise
+        documents: list[Summary] = []
+        used_items: list[SourceItem] = []
+        for item in items:
+            try:
+                text = self.extractor.extract(item.path)
+                if text.strip():
+                    documents.append(Summary(title=item.title, text=text[: self.settings.max_input_chars // 2]))
+                    used_items.append(item)
+            finally:
+                self._cleanup_source_item(item)
+        if not documents:
+            return "Busquei no IMA, mas nao consegui extrair texto dos documentos retornados."
+        answer = self.summarizer.answer_question_from_documents(question, documents)
+        sources = "\n".join(
+            f"- {item.title} ({_item_report_day(item) or 'data nao detectada'})"
+            for item in used_items
+        )
+        return f"{answer}\n\nDocumentos IMA usados:\n{sources}"
+
+    def _answer_inventory_question(self, question: str) -> str:
+        value = question.lower()
+        asks_inventory = any(
+            term in value
+            for term in (
+                "quais documentos",
+                "que documentos",
+                "documentos que",
+                "consegue acessar",
+                "pode acessar",
+                "lista",
+                "recentes",
+                "quao recente",
+                "quão recente",
+                "pdfs",
+                "reports",
+                "relatorios",
+                "relatórios",
+            )
+        )
+        if not asks_inventory:
+            return ""
+        stored = self.state.recent_summaries(max(self.settings.recent_memory_limit, 20))
+        if not stored:
+            return "Nao ha documentos resumidos salvos na memoria local ainda."
+
+        lines = ["Memoria local recente, baseada no SQLite:"]
+        detected_days = []
+        for idx, item in enumerate(stored[:15], start=1):
+            report_day_value = _item_report_day_from_title(item.title) or "data nao detectada"
+            detected_days.append(report_day_value)
+            processed_day = item.processed_at.split("T", 1)[0] if item.processed_at else "n/a"
+            lines.append(f"{idx}. {item.title} | relatorio: {report_day_value} | processado: {processed_day}")
+        real_days = sorted({day for day in detected_days if day != "data nao detectada"})
+        if real_days:
+            lines.insert(1, f"Datas detectadas: {real_days[0]} ate {real_days[-1]}.")
+        lines.append("Obs: com COLLECTOR_ENABLED=0 eu nao consulto IMA ao vivo; respondo so pela memoria local.")
+        return "\n".join(lines)
 
     def _notify_budget_stop(self, detail: str) -> None:
         message = (

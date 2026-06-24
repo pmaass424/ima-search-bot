@@ -189,6 +189,32 @@ class ImaKnowledgeConnector:
                 items.append(item)
         return items
 
+    def search_items(
+        self,
+        query: str,
+        max_results: int = 8,
+        max_downloads: int = 3,
+    ) -> list[SourceItem]:
+        if not self.client.enabled or not self.knowledge_base_id:
+            raise RuntimeError("Configure IMA_CLIENT_ID, IMA_API_KEY and IMA_KNOWLEDGE_BASE_ID in .env")
+        payload = self.client.search_knowledge(self.knowledge_base_id, query, cursor="")
+        rows = payload.get("info_list") or []
+        rows = rows[: max(1, max_results)]
+        items: list[SourceItem] = []
+        seen: set[str] = set()
+        for row in rows:
+            media_id = str(row.get("media_id") or "")
+            if not media_id or media_id in seen:
+                continue
+            seen.add(media_id)
+            title = str(row.get("title") or row.get("name") or media_id)
+            item = self._download_media(media_id=media_id, title=title)
+            if item:
+                items.append(item)
+            if max_downloads > 0 and len(items) >= max_downloads:
+                break
+        return items
+
     def _list_all_knowledge(
         self,
         folder_id: str,
