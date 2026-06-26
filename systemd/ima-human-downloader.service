@@ -1,0 +1,16 @@
+[Unit]
+Description=IMA Human Downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ima-research-bot
+EnvironmentFile=/opt/ima-research-bot/.env
+ExecStart=/opt/ima-research-bot/.venv/bin/python -m ima_research_bot ima-human-serve
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

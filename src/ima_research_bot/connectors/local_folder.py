@@ -55,6 +55,14 @@ class LocalFolderConnector:
                 for path in paths
                 if report_day(path_report_timestamp(path)) == target_day
             ]
+        elif os.getenv("LOCAL_LATEST_ONLY", "1") != "0":
+            latest_day = _latest_report_day(paths)
+            if latest_day:
+                paths = [
+                    path
+                    for path in paths
+                    if report_day(path_report_timestamp(path)) == latest_day
+                ]
 
         paths.sort(key=path_recency_key, reverse=True)
         if max_items > 0:
@@ -90,3 +98,13 @@ class LocalFolderConnector:
         if min_age_seconds > 0 and time.time() - stat.st_mtime < min_age_seconds:
             return False
         return True
+
+
+def _latest_report_day(paths: list[Path]) -> str:
+    days = {
+        day
+        for path in paths
+        for day in [report_day(path_report_timestamp(path))]
+        if day is not None
+    }
+    return max(days) if days else ""

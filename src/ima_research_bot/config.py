@@ -42,6 +42,14 @@ class Settings:
     send_text_updates: bool
     summary_language: str
     max_input_chars: int
+    ima_human_url: str
+    ima_human_cdp_url: str
+    ima_human_profile_dir: Path
+    ima_human_download_dir: Path
+    ima_human_max_downloads_per_cycle: int
+    ima_human_poll_interval_minutes: int
+    ima_human_headless: bool
+    ima_human_folder_paths: tuple[tuple[str, ...], ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,4 +90,25 @@ class Settings:
             send_text_updates=os.getenv("SEND_TEXT_UPDATES", "1") != "0",
             summary_language=os.getenv("SUMMARY_LANGUAGE", "English"),
             max_input_chars=int(os.getenv("MAX_INPUT_CHARS", "45000")),
+            ima_human_url=os.getenv("IMA_HUMAN_URL", "https://ima.qq.com"),
+            ima_human_cdp_url=os.getenv("IMA_HUMAN_CDP_URL", ""),
+            ima_human_profile_dir=Path(
+                os.getenv("IMA_HUMAN_PROFILE_DIR", "/opt/ima-browser-profile")
+            ).expanduser(),
+            ima_human_download_dir=Path(
+                os.getenv("IMA_HUMAN_DOWNLOAD_DIR", os.getenv("WATCH_DIR", "/opt/research-inbox"))
+            ).expanduser(),
+            ima_human_max_downloads_per_cycle=int(os.getenv("IMA_HUMAN_MAX_DOWNLOADS_PER_CYCLE", "3")),
+            ima_human_poll_interval_minutes=int(os.getenv("IMA_HUMAN_POLL_INTERVAL_MINUTES", "10")),
+            ima_human_headless=os.getenv("IMA_HUMAN_HEADLESS", "1") != "0",
+            ima_human_folder_paths=_parse_folder_paths(os.getenv("IMA_HUMAN_FOLDER_PATHS", "")),
         )
+
+
+def _parse_folder_paths(value: str) -> tuple[tuple[str, ...], ...]:
+    paths = []
+    for raw_path in value.split(";;"):
+        parts = tuple(part.strip() for part in raw_path.split("|") if part.strip())
+        if parts:
+            paths.append(parts)
+    return tuple(paths)

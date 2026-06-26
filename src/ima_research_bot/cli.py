@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from .config import Settings
 from .connectors.ima_tencent import ImaTencentConfig, ImaTencentConnector
+from .ima_human import ImaHumanConfig, ImaHumanDownloader, ImaHumanError, serve_human_downloader
 from .pipeline import ResearchPipeline
 from .radar import ImaRadar
 
@@ -29,7 +30,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="ima-research-bot")
     parser.add_argument(
         "command",
-        choices=["run-once", "serve", "digest", "radar", "ima-list-kb", "ima-list-knowledge"],
+        choices=[
+            "run-once",
+            "serve",
+            "digest",
+            "radar",
+            "ima-list-kb",
+            "ima-list-knowledge",
+            "ima-human-login",
+            "ima-human-download",
+            "ima-human-serve",
+        ],
     )
     args = parser.parse_args()
 
@@ -58,6 +69,32 @@ def main() -> None:
 
     if args.command == "radar":
         print(ImaRadar(settings).run())
+        return
+
+    if args.command in {"ima-human-login", "ima-human-download", "ima-human-serve"}:
+        downloader = ImaHumanDownloader(ImaHumanConfig.from_settings(settings))
+        if args.command == "ima-human-login":
+            downloader.login()
+            return
+        if args.command == "ima-human-download":
+            try:
+                result = downloader.run_cycle()
+                print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
+            except ImaHumanError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                raise SystemExit(2)
+            return
+        serve_human_downloader(settings)
         return
 
     pipeline = ResearchPipeline(settings)
