@@ -16,6 +16,7 @@ tmp_test_source/
 *.mp3
 *.wav
 *.log
+*.pid
 .DS_Store
 ._*
 __MACOSX/

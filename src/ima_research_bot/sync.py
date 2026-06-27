@@ -1,5 +1,7 @@
 import os
 import re
+from concurrent.futures import FIRST_COMPLETED, Future, wait
+from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -51,41 +53,70 @@ class LocalToR2Sync:
         uploaded = 0
         skipped = 0
         uploaded_keys: list[str] = []
-        for path in self.root.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                continue
-            scanned += 1
-            digest = file_digest(path)
-            if self.state.has_stored_digest(digest):
-                skipped += 1
-                continue
-            if limit > 0 and uploaded >= limit:
-                break
-            key = self._key_for(path)
-            stored_key = self.storage.upload_file(
-                path,
-                key,
-                metadata={
-                    "source": "local-baseline",
-                    "digest": digest,
-                    "title": _metadata_value(path.name),
-                },
-            )
-            self.state.record_stored_object(
-                storage_key=stored_key,
-                source_id=f"local:{path.relative_to(self.root)}",
-                title=path.name,
-                digest=digest,
-                size_bytes=path.stat().st_size,
-            )
-            uploaded += 1
-            uploaded_keys.append(stored_key)
+        workers = max(1, int(os.getenv("STORAGE_UPLOAD_WORKERS", "8")))
+        pending: dict[Future, tuple[Path, str, str]] = {}
+
+        def collect(done: set[Future]) -> None:
+            nonlocal uploaded
+            for future in done:
+                path, digest, source_id = pending.pop(future)
+                stored_key = future.result()
+                self.state.record_stored_object(
+                    storage_key=stored_key,
+                    source_id=source_id,
+                    title=path.name,
+                    digest=digest,
+                    size_bytes=path.stat().st_size,
+                )
+                uploaded += 1
+                if uploaded == 1 or uploaded % 100 == 0:
+                    print(f"uploaded {uploaded} files to R2; latest={stored_key}", flush=True)
+                if len(uploaded_keys) < 50:
+                    uploaded_keys.append(stored_key)
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            limit_reached = False
+            for path in self.root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                    continue
+                scanned += 1
+                digest = file_digest(path)
+                if self.state.has_stored_digest(digest):
+                    skipped += 1
+                    continue
+                if limit > 0 and uploaded + len(pending) >= limit:
+                    limit_reached = True
+                    break
+                key = self._key_for(path)
+                source_id = f"local:{path.relative_to(self.root)}"
+                future = executor.submit(
+                    self.storage.upload_file,
+                    path,
+                    key,
+                    metadata={
+                        "source": "local-baseline",
+                        "digest": digest,
+                        "title": _metadata_value(path.name),
+                    },
+                )
+                pending[future] = (path, digest, source_id)
+                if len(pending) >= workers * 2:
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    collect(done)
+
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                collect(done)
+
+            if limit_reached:
+                print(f"upload limit reached at {limit} scheduled files", flush=True)
         return SyncResult(scanned=scanned, uploaded=uploaded, skipped=skipped, uploaded_keys=uploaded_keys)
 
     def _key_for(self, path: Path) -> str:
         relative = str(path.relative_to(self.root)).strip("/")
-        day = report_day(path_report_timestamp(path)) or "undated"
-        return f"baseline/{day}/{relative}"
+        return f"baseline/{relative}"
 
 
 class ImaToR2Sync:
@@ -168,4 +199,5 @@ def _safe_name(value: str, fallback: str = "file") -> str:
 
 
 def _metadata_value(value: str) -> str:
-    return value.encode("utf-8", errors="ignore")[:900].decode("utf-8", errors="ignore")
+    raw = value.encode("utf-8", errors="ignore")
+    return b64encode(raw).decode("ascii")[:900]

@@ -31,15 +31,15 @@ class R2ArchitectureTest(unittest.TestCase):
             state = StateStore(root / "state.sqlite3")
             storage = FakeStorage()
 
-            first = LocalToR2Sync(report.parent, storage, state).run()
-            second = LocalToR2Sync(report.parent, storage, state).run()
+            first = LocalToR2Sync(root, storage, state).run()
+            second = LocalToR2Sync(root, storage, state).run()
             stats = state.storage_stats()
 
         self.assertEqual(first.uploaded, 1)
         self.assertEqual(second.uploaded, 0)
         self.assertEqual(second.skipped, 1)
         self.assertEqual(stats["stored_objects"], 1)
-        self.assertEqual(list(storage.uploads), ["baseline/2026-06-26/20260626-test.pdf"])
+        self.assertEqual(list(storage.uploads), ["baseline/fixed-base/20260626-test.pdf"])
 
 
 if __name__ == "__main__":
