@@ -23,6 +23,16 @@ class StoredSummary:
     processed_at: str
 
 
+@dataclass(frozen=True)
+class StoredObject:
+    storage_key: str
+    source_id: str
+    title: str
+    digest: str
+    size_bytes: int
+    stored_at: str
+
+
 class StateStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -76,6 +86,24 @@ class StateStore:
                     updated_at TEXT NOT NULL
                 )
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stored_objects (
+                    storage_key TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    digest TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    stored_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stored_objects_source ON stored_objects(source_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stored_objects_digest ON stored_objects(digest)"
             )
 
     def is_processed(self, item: SourceItem) -> bool:
@@ -196,6 +224,75 @@ class StateStore:
                 (key,),
             ).fetchone()
         return str(row[0]) if row else None
+
+    def record_stored_object(
+        self,
+        storage_key: str,
+        source_id: str,
+        title: str,
+        digest: str,
+        size_bytes: int,
+    ) -> None:
+        stored_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO stored_objects(storage_key, source_id, title, digest, size_bytes, stored_at)
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(storage_key) DO UPDATE SET
+                    source_id = excluded.source_id,
+                    title = excluded.title,
+                    digest = excluded.digest,
+                    size_bytes = excluded.size_bytes,
+                    stored_at = excluded.stored_at
+                """,
+                (storage_key, source_id, title, digest, int(size_bytes), stored_at),
+            )
+
+    def has_stored_source(self, source_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM stored_objects WHERE source_id = ? LIMIT 1",
+                (source_id,),
+            ).fetchone()
+        return bool(row)
+
+    def has_stored_digest(self, digest: str) -> bool:
+        if not digest:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM stored_objects WHERE digest = ? LIMIT 1",
+                (digest,),
+            ).fetchone()
+        return bool(row)
+
+    def storage_stats(self) -> dict:
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM stored_objects"
+            ).fetchone()
+            latest = conn.execute(
+                """
+                SELECT storage_key, title, size_bytes, stored_at
+                FROM stored_objects
+                ORDER BY stored_at DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        return {
+            "stored_objects": int(total[0] or 0),
+            "stored_bytes": int(total[1] or 0),
+            "latest": [
+                {
+                    "storage_key": row[0],
+                    "title": row[1],
+                    "size_bytes": int(row[2] or 0),
+                    "stored_at": row[3],
+                }
+                for row in latest
+            ],
+        }
 
 
 def file_digest(path: Path) -> str:

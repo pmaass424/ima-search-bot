@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import requests
 
-from ..recency import row_recency_key, row_recency_timestamp
+from ..recency import report_day, row_recency_key, row_recency_timestamp, row_report_timestamp, target_report_day_from_env
 from ..state import SourceItem, StateStore, file_digest
 
 
@@ -134,35 +134,7 @@ class ImaKnowledgeConnector:
         if not self.client.enabled or not self.knowledge_base_id:
             raise RuntimeError("Configure IMA_CLIENT_ID, IMA_API_KEY and IMA_KNOWLEDGE_BASE_ID in .env")
 
-        folder_id = os.getenv("IMA_FOLDER_ID", "")
-        if os.getenv("IMA_LATEST_DATE_FOLDER", "0") == "1":
-            latest_folder = self._latest_date_folder(
-                folder_id=folder_id,
-                max_pages=int(os.getenv("IMA_MAX_PAGES", "1")),
-                max_depth=int(os.getenv("IMA_LATEST_DATE_FOLDER_DEPTH", "4")),
-            )
-            if latest_folder:
-                folder_id, folder_name = latest_folder
-                print(f"IMA latest date folder: {folder_name} ({folder_id})")
-
-        rows = self._list_all_knowledge(
-            folder_id=folder_id,
-            recursive=os.getenv("IMA_RECURSIVE", "0") == "1",
-            max_pages=int(os.getenv("IMA_MAX_PAGES", "1")),
-        )
-        rows.sort(key=lambda row: row_recency_key(row, text_fields=("title", "name")), reverse=True)
-        if os.getenv("IMA_BALANCE_FOLDERS", "1") != "0":
-            rows = _interleave_by_folder(rows)
-        max_items = int(os.getenv("IMA_MAX_ITEMS", "25"))
-        if max_items > 0:
-            rows = rows[:max_items]
-        print(f"IMA candidate files: {len(rows)}")
-        for row in rows[:10]:
-            print(
-                "IMA candidate:",
-                row.get("title") or row.get("name") or row.get("media_id"),
-                "folder=" + _folder_label(row),
-            )
+        rows = self.list_candidate_rows()
         items: list[SourceItem] = []
         max_downloads = int(os.getenv("IMA_MAX_DOWNLOADS_PER_RUN", "3"))
         for row in rows:
@@ -174,7 +146,7 @@ class ImaKnowledgeConnector:
                 continue
             if max_downloads > 0 and len(items) >= max_downloads:
                 break
-            title = str(row.get("title") or media_id)
+            title = str(row.get("title") or row.get("name") or media_id)
             try:
                 item = self._download_media(media_id=media_id, title=title)
             except ImaApiError as exc:
@@ -188,6 +160,69 @@ class ImaKnowledgeConnector:
             if item:
                 items.append(item)
         return items
+
+    def list_candidate_rows(self) -> list[dict[str, Any]]:
+        folder_id = os.getenv("IMA_FOLDER_ID", "")
+        folder_path: list[str] = []
+        if os.getenv("IMA_LATEST_DATE_FOLDER", "0") == "1":
+            latest_folder = self._latest_date_folder(
+                folder_id=folder_id,
+                max_pages=int(os.getenv("IMA_MAX_PAGES", "1")),
+                max_depth=int(os.getenv("IMA_LATEST_DATE_FOLDER_DEPTH", "4")),
+            )
+            if latest_folder:
+                folder_id, folder_name = latest_folder
+                folder_path = [folder_name]
+                print(f"IMA latest date folder: {folder_name} ({folder_id})")
+
+        rows = self._list_all_knowledge(
+            folder_id=folder_id,
+            recursive=os.getenv("IMA_RECURSIVE", "0") == "1",
+            max_pages=int(os.getenv("IMA_MAX_PAGES", "1")),
+            folder_path=folder_path,
+        )
+        rows = self._filter_recent(rows)
+        rows.sort(key=lambda row: row_recency_key(row, text_fields=("title", "name")), reverse=True)
+        if os.getenv("IMA_BALANCE_FOLDERS", "1") != "0":
+            rows = _interleave_by_folder(rows)
+        max_items = int(os.getenv("IMA_MAX_ITEMS", "25"))
+        if max_items > 0:
+            rows = rows[:max_items]
+        print(f"IMA candidate files: {len(rows)}")
+        for row in rows[:10]:
+            print(
+                "IMA candidate:",
+                row.get("title") or row.get("name") or row.get("media_id"),
+                "folder=" + _folder_label(row),
+            )
+        return rows
+
+    def _filter_recent(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        target_day = target_report_day_from_env(prefix="IMA")
+        if target_day is not None:
+            kept = [
+                row
+                for row in rows
+                if report_day(row_report_timestamp(row, text_fields=("title", "name", "_folder_path"))) == target_day
+            ]
+            print(f"IMA target-day kept {len(kept)}/{len(rows)} candidates for report day {target_day}")
+            return kept
+
+        if os.getenv("IMA_LATEST_ONLY", "1") == "0":
+            return rows
+
+        latest_day = _latest_report_day(rows)
+        if not latest_day:
+            return rows
+        kept = [
+            row
+            for row in rows
+            if report_day(row_report_timestamp(row, text_fields=("title", "name", "_folder_path"))) == latest_day
+        ]
+        if kept:
+            print(f"IMA latest-only kept {len(kept)}/{len(rows)} candidates for report day {latest_day}")
+            return kept
+        return rows
 
     def search_items(
         self,
@@ -435,6 +470,16 @@ def _folder_bucket(row: dict[str, Any]) -> str:
 
 def _folder_label(row: dict[str, Any]) -> str:
     return str(row.get("_folder_path") or row.get("parent_folder_id") or "root")
+
+
+def _latest_report_day(rows: list[dict[str, Any]]) -> Optional[str]:
+    days = {
+        day
+        for row in rows
+        for day in [report_day(row_report_timestamp(row, text_fields=("title", "name", "_folder_path")))]
+        if day is not None
+    }
+    return max(days) if days else None
 
 
 def _extension_for(title: str, content_type: str, media_type: int) -> str:

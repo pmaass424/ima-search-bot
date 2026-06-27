@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional
 
 DATE_PATTERNS = (
     re.compile(r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])(?!\d)"),
+    re.compile(r"(?<!\d)(2[5-9]|3[0-9])(0[1-9]|1[0-2])([0-2]\d|3[01])(?!\d)"),
     re.compile(r"(?<!\d)(20\d{2})[-._年](0?[1-9]|1[0-2])[-._月](0?[1-9]|[12]\d|3[01])(?:日)?(?!\d)"),
 )
 YEAR_PATTERN = re.compile(r"(?<!\d)(20\d{2})(?:年)?(?!\d)")
@@ -68,7 +69,7 @@ def report_day(timestamp: float) -> Optional[str]:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
 
 
-def target_report_day_from_env(prefix: str = "ALIST") -> Optional[str]:
+def target_report_day_from_env(prefix: str = "R2") -> Optional[str]:
     target_date = (
         os.getenv(f"{prefix}_TARGET_REPORT_DATE", "").strip()
         or os.getenv("TARGET_REPORT_DATE", "").strip()
@@ -104,6 +105,8 @@ def _date_timestamp(value: str) -> Optional[float]:
     for pattern in DATE_PATTERNS:
         for match in pattern.finditer(value):
             year, month, day = (int(part) for part in match.groups())
+            if year < 100:
+                year += 2000
             best = _max_timestamp(best, year, month, day)
     contextual = _contextual_month_day_timestamp(value)
     return max(item for item in (best, contextual) if item is not None) if best or contextual else None

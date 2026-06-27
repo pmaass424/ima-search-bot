@@ -1,0 +1,11 @@
+[Unit]
+Description=IMA to Cloudflare R2 Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/ima-search-bot
+EnvironmentFile=/opt/ima-search-bot/.env
+ExecStart=/opt/ima-search-bot/.venv/bin/python -m ima_research_bot ima-sync-r2

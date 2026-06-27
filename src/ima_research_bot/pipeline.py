@@ -5,12 +5,13 @@ from pathlib import Path
 
 from .budget import DailyBudgetExceeded, OpenAIBudget, OpenAIPrices
 from .config import Settings
-from .connectors import AListConfig, AListConnector, LocalFolderConnector
-from .connectors.ima_tencent import ImaApiError, ImaKnowledgeConnector, ImaTencentConfig, ImaTencentConnector
+from .connectors import R2Connector
+from .connectors.ima_tencent import ImaApiError
 from .extractors import TextExtractor
 from .notifiers import TelegramNotifier, WeComNotifier
 from .recency import report_day, row_report_timestamp
 from .state import SourceItem, StateStore, StoredSummary
+from .storage import R2Config, R2Storage
 from .summarizer import Summarizer, Summary
 from .tts import build_tts
 
@@ -412,43 +413,27 @@ class ResearchPipeline:
             )
 
     def _cleanup_source_item(self, item: SourceItem) -> None:
-        if item.source_id.startswith(("ima:", "alist:")):
+        if item.source_id.startswith("r2:"):
             try:
                 os.unlink(item.path)
             except FileNotFoundError:
                 pass
 
     def _build_connector(self, settings: Settings):
-        if settings.ima_client_id and settings.ima_api_key and settings.ima_knowledge_base_id:
-            logger.info("using IMA knowledge base as source")
-            return ImaKnowledgeConnector(
-                client=ImaTencentConnector(
-                    ImaTencentConfig(
-                        base_url=settings.ima_base_url,
-                        client_id=settings.ima_client_id,
-                        api_key=settings.ima_api_key,
-                    )
-                ),
-                knowledge_base_id=settings.ima_knowledge_base_id,
-                cache_dir=settings.output_dir / "ima-cache",
-                state_store=self.state,
+        storage = R2Storage(
+            R2Config(
+                account_id=settings.r2_account_id,
+                access_key_id=settings.r2_access_key_id,
+                secret_access_key=settings.r2_secret_access_key,
+                bucket=settings.r2_bucket,
+                endpoint=settings.r2_endpoint,
+                prefix=settings.r2_prefix,
             )
-        if settings.alist_base_url and settings.alist_path and (
-            settings.alist_token or settings.alist_username
-        ):
-            logger.info("using AList as source")
-            return AListConnector(
-                AListConfig(
-                    base_url=settings.alist_base_url,
-                    username=settings.alist_username,
-                    password=settings.alist_password,
-                    token=settings.alist_token,
-                    path=settings.alist_path,
-                ),
-                state_store=self.state,
-            )
-        logger.warning("IMA is not fully configured; falling back to local WATCH_DIR")
-        return LocalFolderConnector(settings.watch_dir)
+        )
+        if not storage.enabled:
+            raise RuntimeError("Configure R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET")
+        logger.info("using Cloudflare R2 as source")
+        return R2Connector(storage=storage, cache_dir=settings.r2_cache_dir, state_store=self.state)
 
 
 def _safe_name(value: str) -> str:
@@ -505,12 +490,10 @@ def _item_report_day(item: SourceItem) -> str:
 
 
 def _source_name(item: SourceItem) -> str:
-    if item.source_id.startswith("alist:"):
-        return "Quark/AList"
+    if item.source_id.startswith("r2:"):
+        return "Cloudflare R2"
     if item.source_id.startswith("ima:"):
         return "IMA"
-    if item.source_id.startswith("local:"):
-        return "pasta local"
     return item.source_id.split(":", 1)[0] or "desconhecida"
 
 

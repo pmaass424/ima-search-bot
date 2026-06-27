@@ -1,12 +1,9 @@
-from .alist import AListConfig, AListConnector
-from .local_folder import LocalFolderConnector
 from .ima_tencent import ImaKnowledgeConnector, ImaTencentConfig, ImaTencentConnector
+from .r2 import R2Connector
 
 __all__ = [
-    "AListConfig",
-    "AListConnector",
     "ImaKnowledgeConnector",
     "ImaTencentConfig",
     "ImaTencentConnector",
-    "LocalFolderConnector",
+    "R2Connector",
 ]

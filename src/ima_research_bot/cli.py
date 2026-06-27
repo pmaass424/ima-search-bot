@@ -6,15 +6,18 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from .config import Settings
-from .connectors.ima_tencent import ImaTencentConfig, ImaTencentConnector
-from .ima_human import ImaHumanConfig, ImaHumanDownloader, ImaHumanError, serve_human_downloader
+from .connectors.ima_tencent import ImaApiError, ImaKnowledgeConnector, ImaTencentConfig, ImaTencentConnector
 from .pipeline import ResearchPipeline
 from .radar import ImaRadar
+from .state import StateStore
+from .storage import R2Config, R2Storage
+from .sync import ImaToR2Sync, LocalToR2Sync
 
 
 @dataclass
@@ -37,11 +40,12 @@ def main() -> None:
             "radar",
             "ima-list-kb",
             "ima-list-knowledge",
-            "ima-human-login",
-            "ima-human-download",
-            "ima-human-serve",
+            "ima-sync-r2",
+            "storage-upload-local",
+            "storage-stats",
         ],
     )
+    parser.add_argument("path", nargs="?", help="Local folder for storage-upload-local.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -50,6 +54,39 @@ def main() -> None:
     )
 
     settings = Settings.from_env()
+    state = StateStore(settings.state_db)
+
+    if args.command in {"storage-upload-local", "storage-stats", "ima-sync-r2"}:
+        storage = _build_r2_storage(settings)
+        if args.command == "storage-stats":
+            print(json.dumps(state.storage_stats(), ensure_ascii=False, indent=2))
+            return
+        if args.command == "storage-upload-local":
+            if not args.path:
+                raise SystemExit("Pass the local baseline folder path: ima-research-bot storage-upload-local /path/to/folder")
+            result = LocalToR2Sync(Path(args.path), storage, state).run(
+                limit=int(os.getenv("STORAGE_UPLOAD_LIMIT", "0"))
+            )
+            print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+            return
+        ima = _build_ima_connector(settings, state)
+        try:
+            result = ImaToR2Sync(ima, storage, state).run()
+        except ImaApiError as exc:
+            print(
+                json.dumps(
+                    {
+                        "status": "quota" if exc.is_quota_error else "failed",
+                        "code": exc.code,
+                        "message": exc.message,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            raise SystemExit(2)
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+        return
 
     if args.command in {"ima-list-kb", "ima-list-knowledge"}:
         ima = ImaTencentConnector(
@@ -69,32 +106,6 @@ def main() -> None:
 
     if args.command == "radar":
         print(ImaRadar(settings).run())
-        return
-
-    if args.command in {"ima-human-login", "ima-human-download", "ima-human-serve"}:
-        downloader = ImaHumanDownloader(ImaHumanConfig.from_settings(settings))
-        if args.command == "ima-human-login":
-            downloader.login()
-            return
-        if args.command == "ima-human-download":
-            try:
-                result = downloader.run_cycle()
-                print(json.dumps(result.__dict__, ensure_ascii=False, indent=2))
-            except ImaHumanError as exc:
-                print(
-                    json.dumps(
-                        {
-                            "status": "failed",
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                )
-                raise SystemExit(2)
-            return
-        serve_human_downloader(settings)
         return
 
     pipeline = ResearchPipeline(settings)
@@ -342,3 +353,36 @@ def _run_manual_digest_locked(pipeline: ResearchPipeline, runtime: RuntimeState)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _build_r2_storage(settings: Settings) -> R2Storage:
+    storage = R2Storage(
+        R2Config(
+            account_id=settings.r2_account_id,
+            access_key_id=settings.r2_access_key_id,
+            secret_access_key=settings.r2_secret_access_key,
+            bucket=settings.r2_bucket,
+            endpoint=settings.r2_endpoint,
+            prefix=settings.r2_prefix,
+        )
+    )
+    if not storage.enabled:
+        raise SystemExit("Configure R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET")
+    return storage
+
+
+def _build_ima_connector(settings: Settings, state: StateStore) -> ImaKnowledgeConnector:
+    if not (settings.ima_client_id and settings.ima_api_key and settings.ima_knowledge_base_id):
+        raise SystemExit("Configure IMA_CLIENT_ID, IMA_API_KEY and IMA_KNOWLEDGE_BASE_ID")
+    return ImaKnowledgeConnector(
+        client=ImaTencentConnector(
+            ImaTencentConfig(
+                base_url=settings.ima_base_url,
+                client_id=settings.ima_client_id,
+                api_key=settings.ima_api_key,
+            )
+        ),
+        knowledge_base_id=settings.ima_knowledge_base_id,
+        cache_dir=settings.output_dir / "ima-cache",
+        state_store=state,
+    )
